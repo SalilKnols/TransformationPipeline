@@ -1,40 +1,44 @@
 package org.nashtech.com.pipeline;
 
-import org.nashtech.com.util.AESUtil;
-import org.nashtech.com.util.RSAUtil;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.io.TextIO;
+import org.apache.beam.sdk.options.PipelineOptions;
+import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.MapElements;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.values.TypeDescriptor;
+import org.nashtech.com.exceptions.EncryptionException;
+import org.nashtech.com.util.AESUtil;
+import org.nashtech.com.util.RSAUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.crypto.SecretKey;
 import java.io.IOException;
 import java.io.InputStream;
 import java.security.KeyPair;
-import java.util.*;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Properties;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
-/**
- * DataTransformation class handles the transformation pipeline for encrypting CSV data
- * and writing it to a new CSV file.
- */
-public class DataTransformation {
+public class PipelineSetup {
 
-    /**
-     * Main method for executing the data transformation pipeline.
-     * @param args Command-line arguments (not used in this implementation)
-     */
     public static void main(String[] args) {
+        Logger logger = LoggerFactory.getLogger(PipelineSetup.class);
+        PipelineOptions options = PipelineOptionsFactory.create();
+
         Properties prop = new Properties();
-        try (InputStream input = DataTransformation.class.getClassLoader().getResourceAsStream("field.properties")) {
+        try (InputStream input = PipelineSetup.class.getClassLoader().getResourceAsStream("field.properties")) {
             if (input == null) {
                 System.err.println("Unable to find field.properties");
                 return;
             }
             prop.load(input);
-        } catch (IOException ex) {
-            ex.printStackTrace();
+        } catch (IOException ioException) {
+            ioException.printStackTrace();
             return;
         }
 
@@ -48,28 +52,24 @@ public class DataTransformation {
             KeyPair rsaKeyPair = RSAUtil.generateRSAKeyPair();
             String encryptedAesKey = RSAUtil.encryptAESKeyWithRSA(aesKey, rsaKeyPair.getPublic());
 
-            Pipeline p = Pipeline.create();
+            Pipeline pipeline = Pipeline.create(options);
 
-            p.apply("Read CSV", TextIO.read().from(inputCsvFile))
+            pipeline.apply("Read CSV", TextIO.read().from(inputCsvFile).withHintMatchesManyFiles())
                     .apply("Parse and Validate CSV", ParDo.of(new ParseAndValidateCsvFn(schema)))
                     .apply("Encrypt Data", ParDo.of(new EncryptDataFn(schema, personalInfoColumns, aesKey)))
                     .apply("Format CSV", MapElements.into(TypeDescriptor.of(String.class))
                             .via((List<String> row) -> String.join(",", row)))
                     .apply("Write CSV", TextIO.write().to(outputCsvFile).withSuffix(".csv").withoutSharding());
 
-            p.run().waitUntilFinish();
+            pipeline.run().waitUntilFinish();
 
-            // Print or save the encrypted AES key (for demonstration purposes)
-            System.out.println("Encrypted AES Key: " + encryptedAesKey);
+            logger.info("Encrypted AES Key: {}", encryptedAesKey);
 
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (Exception encryptionException) {
+            encryptionException.printStackTrace();
         }
     }
 
-    /**
-     * DoFn class for parsing and validating CSV input based on a given schema.
-     */
     static class ParseAndValidateCsvFn extends DoFn<String, List<String>> {
         private final List<String> schema;
 
@@ -87,13 +87,12 @@ public class DataTransformation {
         }
     }
 
-    /**
-     * DoFn class for encrypting sensitive data in CSV rows based on specified columns.
-     */
     static class EncryptDataFn extends DoFn<List<String>, List<String>> {
+        private static final Logger logger = LoggerFactory.getLogger(EncryptDataFn.class);
         private final List<String> schema;
         private final List<String> personalInfoColumns;
         private final SecretKey aesKey;
+        private boolean isFirstRow = true; // Flag to track if it's the first row
 
         EncryptDataFn(List<String> schema, List<String> personalInfoColumns, SecretKey aesKey) {
             this.schema = schema;
@@ -102,17 +101,26 @@ public class DataTransformation {
         }
 
         @ProcessElement
-        public void processElement(@Element List<String> row, OutputReceiver<List<String>> out) throws Exception {
-            List<String> encryptedRow = new ArrayList<>();
-            for (int i = 0; i < row.size(); i++) {
-                String columnName = schema.get(i);
-                if (personalInfoColumns.contains(columnName)) {
-                    encryptedRow.add(AESUtil.encrypt(row.get(i), aesKey));
-                } else {
-                    encryptedRow.add(row.get(i));
-                }
+        public void processElement(@Element List<String> row, OutputReceiver<List<String>> out) {
+            if (isFirstRow) {
+                out.output(row);
+                isFirstRow = false;
+                return;
             }
+
+            List<String> encryptedRow = IntStream.range(0, row.size())
+                    .mapToObj(i -> {
+                        String columnName = schema.get(i);
+                        try {
+                            return personalInfoColumns.contains(columnName) ? AESUtil.encrypt(row.get(i), aesKey) : row.get(i);
+                        } catch (Exception encryptionException) {
+                            logger.error("Encryption failed", encryptionException);
+                            throw new EncryptionException("Encryption failed for column: " + columnName, encryptionException);
+                        }
+                    })
+                    .collect(Collectors.toList());
             out.output(encryptedRow);
         }
     }
+
 }
