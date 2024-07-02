@@ -56,7 +56,7 @@ public class RSAUtil {
     public static String encryptAESKeyWithRSA(SecretKey aesKey, PublicKey publicKey) throws Exception {
         try {
             // Get an instance of Tink's RSA encryption primitive
-            KeysetHandle privateKeysetHandle = KeysetHandle.generateNew(KeyTemplates.get("'RSA_SSA_PKCS1_4096_SHA512_F4'"));
+            KeysetHandle privateKeysetHandle = KeysetHandle.generateNew(KeyTemplates.get("RSA_SSA_PKCS1_4096_SHA512_F4"));
             PublicKeySign signer = privateKeysetHandle.getPrimitive(PublicKeySign.class);
 
             // Encrypt the AES key using RSA
