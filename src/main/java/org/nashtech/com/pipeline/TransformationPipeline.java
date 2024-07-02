@@ -1,8 +1,6 @@
 package org.nashtech.com.pipeline;
 
-import com.google.api.services.bigquery.model.TableFieldSchema;
 import com.google.api.services.bigquery.model.TableRow;
-import com.google.api.services.bigquery.model.TableSchema;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.io.TextIO;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
@@ -15,6 +13,7 @@ import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.values.TypeDescriptor;
 import org.nashtech.com.exceptions.EncryptionException;
 import org.nashtech.com.util.AESUtil;
+import org.nashtech.com.util.BigQueryUtil;
 import org.nashtech.com.util.RSAUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -71,13 +70,12 @@ public class TransformationPipeline {
                     .apply("Format CSV", MapElements.into(TypeDescriptor.of(String.class))
                             .via((List<String> row) -> String.join(",", row)))
                     .apply("Convert to TableRow", MapElements.into(TypeDescriptor.of(TableRow.class))
-                            .via((String csvLine) -> {
-                                TableRow row = new TableRow();
+                            .via(csvLine -> {
+                                TableRow tableRow = new TableRow();
                                 String[] values = csvLine.split(",");
-                                for (int i = 0; i < values.length; i++) {
-                                    row.set(schema.get(i), values[i]);
-                                }
-                                return row;
+                                IntStream.range(0, values.length)
+                                        .forEach(index -> tableRow.set(schema.get(index), values[index]));
+                                return tableRow;
                             }))
                     .apply("Write to BigQuery", BigQueryIO.writeTableRows()
                             .to(String.format("%s:%s.%s", bqProject, bqDataset, bqTable))
@@ -85,7 +83,6 @@ public class TransformationPipeline {
                             .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_APPEND)
                             .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_IF_NEEDED)
                             .withCustomGcsTempLocation(ValueProvider.StaticValueProvider.of("gs://nashtechbeam"))); // Specify GCS temp location
-// Specify GCS temp location
 
             pipeline.run().waitUntilFinish();
 
@@ -129,7 +126,6 @@ public class TransformationPipeline {
         @ProcessElement
         public void processElement(@Element List<String> row, OutputReceiver<List<String>> out) {
             if (isFirstRow) {
-                out.output(row);
                 isFirstRow = false;
                 return;
             }
@@ -151,15 +147,6 @@ public class TransformationPipeline {
 
             logger.info("Encrypted row: {}", encryptedRow);
             out.output(encryptedRow);
-        }
-    }
-
-    static class BigQueryUtil {
-        static TableSchema createBigQuerySchema(List<String> schema) {
-            List<TableFieldSchema> fields = schema.stream()
-                    .map(fieldName -> new TableFieldSchema().setName(fieldName).setType("STRING"))
-                    .collect(Collectors.toList());
-            return new TableSchema().setFields(fields);
         }
     }
 }
