@@ -1,9 +1,14 @@
 package org.nashtech.com.pipeline;
 
+import com.google.api.services.bigquery.model.TableFieldSchema;
+import com.google.api.services.bigquery.model.TableRow;
+import com.google.api.services.bigquery.model.TableSchema;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.io.TextIO;
+import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
+import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.MapElements;
 import org.apache.beam.sdk.transforms.ParDo;
@@ -24,28 +29,34 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-public class PipelineSetup {
+public class TransformationPipeline {
+
+    private static final Logger logger = LoggerFactory.getLogger(TransformationPipeline.class);
 
     public static void main(String[] args) {
-        Logger logger = LoggerFactory.getLogger(PipelineSetup.class);
         PipelineOptions options = PipelineOptionsFactory.create();
+        options.setTempLocation("gs://nashtechbeam");
 
         Properties prop = new Properties();
-        try (InputStream input = PipelineSetup.class.getClassLoader().getResourceAsStream("field.properties")) {
+        try (InputStream input = TransformationPipeline.class.getClassLoader().getResourceAsStream("field.properties")) {
             if (input == null) {
-                System.err.println("Unable to find field.properties");
+                logger.error("Unable to find field.properties");
                 return;
             }
             prop.load(input);
         } catch (IOException ioException) {
-            ioException.printStackTrace();
+            logger.error("Failed to load field.properties", ioException);
             return;
         }
 
         String inputCsvFile = prop.getProperty("inputCsvFile");
         String outputCsvFile = prop.getProperty("outputCsvFile");
+        String bqTable = prop.getProperty("bqTable"); // BigQuery table name
+        String bqProject = prop.getProperty("bqProject"); // BigQuery project ID
+        String bqDataset = prop.getProperty("bqDataset"); // BigQuery dataset ID
         List<String> schema = Arrays.asList(prop.getProperty("schema").split(","));
         List<String> personalInfoColumns = Arrays.asList(prop.getProperty("personalInfoColumns").split(","));
+        String kmsKeyUri = prop.getProperty("kmsKeyUri");
 
         try {
             SecretKey aesKey = AESUtil.generateAESKey();
@@ -56,17 +67,32 @@ public class PipelineSetup {
 
             pipeline.apply("Read CSV", TextIO.read().from(inputCsvFile).withHintMatchesManyFiles())
                     .apply("Parse and Validate CSV", ParDo.of(new ParseAndValidateCsvFn(schema)))
-                    .apply("Encrypt Data", ParDo.of(new EncryptDataFn(schema, personalInfoColumns, aesKey)))
+                    .apply("Encrypt Data", ParDo.of(new EncryptDataFn(schema, personalInfoColumns, kmsKeyUri)))
                     .apply("Format CSV", MapElements.into(TypeDescriptor.of(String.class))
                             .via((List<String> row) -> String.join(",", row)))
-                    .apply("Write CSV", TextIO.write().to(outputCsvFile).withSuffix(".csv").withoutSharding());
+                    .apply("Convert to TableRow", MapElements.into(TypeDescriptor.of(TableRow.class))
+                            .via((String csvLine) -> {
+                                TableRow row = new TableRow();
+                                String[] values = csvLine.split(",");
+                                for (int i = 0; i < values.length; i++) {
+                                    row.set(schema.get(i), values[i]);
+                                }
+                                return row;
+                            }))
+                    .apply("Write to BigQuery", BigQueryIO.writeTableRows()
+                            .to(String.format("%s:%s.%s", bqProject, bqDataset, bqTable))
+                            .withSchema(BigQueryUtil.createBigQuerySchema(schema)) // Create schema dynamically
+                            .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_APPEND)
+                            .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_IF_NEEDED)
+                            .withCustomGcsTempLocation(ValueProvider.StaticValueProvider.of("gs://nashtechbeam"))); // Specify GCS temp location
+// Specify GCS temp location
 
             pipeline.run().waitUntilFinish();
 
             logger.info("Encrypted AES Key: {}", encryptedAesKey);
 
         } catch (Exception encryptionException) {
-            encryptionException.printStackTrace();
+            logger.error("Pipeline execution failed", encryptionException);
         }
     }
 
@@ -88,16 +114,16 @@ public class PipelineSetup {
     }
 
     static class EncryptDataFn extends DoFn<List<String>, List<String>> {
-        private static final Logger logger = LoggerFactory.getLogger(EncryptDataFn.class);
+        private final Logger logger = LoggerFactory.getLogger(EncryptDataFn.class);
         private final List<String> schema;
         private final List<String> personalInfoColumns;
-        private final SecretKey aesKey;
-        private boolean isFirstRow = true; // Flag to track if it's the first row
+        private final String kmsKeyUri;
+        private boolean isFirstRow = true;
 
-        EncryptDataFn(List<String> schema, List<String> personalInfoColumns, SecretKey aesKey) {
+        EncryptDataFn(List<String> schema, List<String> personalInfoColumns, String kmsKeyUri) {
             this.schema = schema;
             this.personalInfoColumns = personalInfoColumns;
-            this.aesKey = aesKey;
+            this.kmsKeyUri = kmsKeyUri;
         }
 
         @ProcessElement
@@ -112,15 +138,28 @@ public class PipelineSetup {
                     .mapToObj(i -> {
                         String columnName = schema.get(i);
                         try {
-                            return personalInfoColumns.contains(columnName) ? AESUtil.encrypt(row.get(i), aesKey) : row.get(i);
+                            String encryptedValue = personalInfoColumns.contains(columnName) ?
+                                    AESUtil.encrypt(row.get(i), kmsKeyUri) : row.get(i);
+                            logger.info("Column '{}' encrypted successfully", columnName);
+                            return encryptedValue;
                         } catch (Exception encryptionException) {
-                            logger.error("Encryption failed", encryptionException);
+                            logger.error("Encryption failed for column: {}", columnName, encryptionException);
                             throw new EncryptionException("Encryption failed for column: " + columnName, encryptionException);
                         }
                     })
                     .collect(Collectors.toList());
+
+            logger.info("Encrypted row: {}", encryptedRow);
             out.output(encryptedRow);
         }
     }
 
+    static class BigQueryUtil {
+        static TableSchema createBigQuerySchema(List<String> schema) {
+            List<TableFieldSchema> fields = schema.stream()
+                    .map(fieldName -> new TableFieldSchema().setName(fieldName).setType("STRING"))
+                    .collect(Collectors.toList());
+            return new TableSchema().setFields(fields);
+        }
+    }
 }
