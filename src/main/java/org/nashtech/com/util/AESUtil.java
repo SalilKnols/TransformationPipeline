@@ -5,6 +5,7 @@ import com.google.crypto.tink.KmsClient;
 import com.google.crypto.tink.integration.gcpkms.GcpKmsClient;
 import org.nashtech.com.exceptions.EncryptionException;
 import org.nashtech.com.exceptions.KeyGenerationException;
+import org.nashtech.com.config.Constants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,13 +29,10 @@ public class AESUtil {
      */
     public static String encrypt(String data, String kmsKeyUri) {
         try {
-            // Create a KmsClient using the provided credentials path
             KmsClient kmsClient = new GcpKmsClient().withCredentials("/home/nashtech/Documents/TransformationPipeline/src/main/resources/vernal-verve-428206-h2-23df7cd24ebc.json");
 
-            // Log successful service account usage
             logger.info("Using service account credentials for AES encryption");
 
-            // Get an Aead primitive using the KMS key URI
             Aead aead = kmsClient.getAead(kmsKeyUri);
 
             // Encrypt data using Tink's Aead interface
@@ -54,8 +52,8 @@ public class AESUtil {
      */
     public static SecretKey generateAESKey() {
         try {
-            KeyGenerator keyGen = KeyGenerator.getInstance("AES");
-            keyGen.init(256); // Choose key size as per your requirements
+            KeyGenerator keyGen = KeyGenerator.getInstance(Constants.AES_ALGORITHM);
+            keyGen.init(Constants.AES_KEY_SIZE);
             return keyGen.generateKey();
         } catch (NoSuchAlgorithmException algorithmException) {
             logger.error("AES key generation failed", algorithmException);

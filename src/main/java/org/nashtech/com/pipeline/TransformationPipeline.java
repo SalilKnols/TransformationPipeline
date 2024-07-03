@@ -28,7 +28,7 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-public class TransformationPipeline {
+public class  TransformationPipeline {
 
     private static final Logger logger = LoggerFactory.getLogger(TransformationPipeline.class);
 
@@ -49,10 +49,9 @@ public class TransformationPipeline {
         }
 
         String inputCsvFile = prop.getProperty("inputCsvFile");
-        String outputCsvFile = prop.getProperty("outputCsvFile");
-        String bqTable = prop.getProperty("bqTable"); // BigQuery table name
-        String bqProject = prop.getProperty("bqProject"); // BigQuery project ID
-        String bqDataset = prop.getProperty("bqDataset"); // BigQuery dataset ID
+        String bqTable = prop.getProperty("bqTable");
+        String bqProject = prop.getProperty("bqProject");
+        String bqDataset = prop.getProperty("bqDataset");
         List<String> schema = Arrays.asList(prop.getProperty("schema").split(","));
         List<String> personalInfoColumns = Arrays.asList(prop.getProperty("personalInfoColumns").split(","));
         String kmsKeyUri = prop.getProperty("kmsKeyUri");
@@ -79,10 +78,10 @@ public class TransformationPipeline {
                             }))
                     .apply("Write to BigQuery", BigQueryIO.writeTableRows()
                             .to(String.format("%s:%s.%s", bqProject, bqDataset, bqTable))
-                            .withSchema(BigQueryUtil.createBigQuerySchema(schema)) // Create schema dynamically
+                            .withSchema(BigQueryUtil.createBigQuerySchema(schema))
                             .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_APPEND)
                             .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_IF_NEEDED)
-                            .withCustomGcsTempLocation(ValueProvider.StaticValueProvider.of("gs://nashtechbeam"))); // Specify GCS temp location
+                            .withCustomGcsTempLocation(ValueProvider.StaticValueProvider.of("gs://nashtechbeam")));
 
             pipeline.run().waitUntilFinish();
 
@@ -131,11 +130,11 @@ public class TransformationPipeline {
             }
 
             List<String> encryptedRow = IntStream.range(0, row.size())
-                    .mapToObj(i -> {
-                        String columnName = schema.get(i);
+                    .mapToObj(index -> {
+                        String columnName = schema.get(index);
                         try {
                             String encryptedValue = personalInfoColumns.contains(columnName) ?
-                                    AESUtil.encrypt(row.get(i), kmsKeyUri) : row.get(i);
+                                    AESUtil.encrypt(row.get(index), kmsKeyUri) : row.get(index);
                             logger.info("Column '{}' encrypted successfully", columnName);
                             return encryptedValue;
                         } catch (Exception encryptionException) {

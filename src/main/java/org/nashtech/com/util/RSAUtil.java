@@ -1,14 +1,13 @@
 package org.nashtech.com.util;
 
-import com.google.crypto.tink.KeyTemplates;
-import com.google.crypto.tink.KeysetHandle;
-import com.google.crypto.tink.PublicKeySign;
 import com.google.crypto.tink.signature.SignatureConfig;
 import org.nashtech.com.exceptions.EncryptionException;
 import org.nashtech.com.exceptions.KeyGenerationException;
+import org.nashtech.com.config.Constants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -19,7 +18,6 @@ public class RSAUtil {
     private static final Logger logger = LoggerFactory.getLogger(RSAUtil.class);
 
     static {
-        // Initialize Tink for RSA signature operations
         try {
             SignatureConfig.register();
         } catch (Exception initializationException) {
@@ -36,8 +34,8 @@ public class RSAUtil {
      */
     public static KeyPair generateRSAKeyPair() {
         try {
-            KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("RSA");
-            keyPairGen.initialize(2048); // You can adjust the key size as needed
+            KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance(Constants.RSA_ALGORITHM);
+            keyPairGen.initialize(Constants.RSA_KEY_SIZE);
             KeyPair keyPair = keyPairGen.generateKeyPair();
             logger.info("RSA key pair generated successfully");
             return keyPair;
@@ -48,21 +46,18 @@ public class RSAUtil {
     }
 
     /**
-     * Encrypts a given AES key using RSA with the provided public key.
+     * Encrypts an AES key using RSA public key.
      *
-     * @param aesKey    The AES key to be encrypted.
-     * @param publicKey The public key used for encryption.
-     * @return Base64-encoded string representation of the encrypted AES key.
-     * @throws EncryptionException if there's an error during encryption.
+     * @param aesKey AES key to encrypt
+     * @param publicKey  RSA public key
+     * @return Base64 encoded encrypted AES key
+     * @throws EncryptionException if encryption fails
      */
     public static String encryptAESKeyWithRSA(SecretKey aesKey, PublicKey publicKey) {
         try {
-            // Get an instance of Tink's RSA encryption primitive
-            KeysetHandle privateKeysetHandle = KeysetHandle.generateNew(KeyTemplates.get("RSA_SSA_PKCS1_4096_SHA512_F4"));
-            PublicKeySign signer = privateKeysetHandle.getPrimitive(PublicKeySign.class);
-
-            // Encrypt the AES key using RSA
-            byte[] encryptedKey = signer.sign(aesKey.getEncoded());
+            Cipher cipher = Cipher.getInstance(Constants.RSA_ALGORITHM + "/ECB/PKCS1Padding");
+            cipher.init(Cipher.ENCRYPT_MODE, publicKey);
+            byte[] encryptedKey = cipher.doFinal(aesKey.getEncoded());
             return Base64.getEncoder().encodeToString(encryptedKey);
         } catch (Exception encryptionException) {
             logger.error("AES key encryption with RSA failed", encryptionException);
