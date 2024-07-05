@@ -7,7 +7,6 @@ import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.options.ValueProvider;
-import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.MapElements;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.values.TypeDescriptor;
@@ -28,14 +27,11 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-public class  TransformationPipeline {
+public class TransformationPipeline {
 
     private static final Logger logger = LoggerFactory.getLogger(TransformationPipeline.class);
 
     public static void main(String[] args) {
-        PipelineOptions options = PipelineOptionsFactory.create();
-        options.setTempLocation("gs://nashtechbeam");
-
         Properties prop = new Properties();
         try (InputStream input = TransformationPipeline.class.getClassLoader().getResourceAsStream("field.properties")) {
             if (input == null) {
@@ -55,6 +51,10 @@ public class  TransformationPipeline {
         List<String> schema = Arrays.asList(prop.getProperty("schema").split(","));
         List<String> personalInfoColumns = Arrays.asList(prop.getProperty("personalInfoColumns").split(","));
         String kmsKeyUri = prop.getProperty("kmsKeyUri");
+        String tempLocation = prop.getProperty("tempLocation");
+
+        PipelineOptions options = PipelineOptionsFactory.create();
+        options.setTempLocation(tempLocation);
 
         try {
             SecretKey aesKey = AESUtil.generateAESKey();
@@ -81,7 +81,7 @@ public class  TransformationPipeline {
                             .withSchema(BigQueryUtil.createBigQuerySchema(schema))
                             .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_APPEND)
                             .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_IF_NEEDED)
-                            .withCustomGcsTempLocation(ValueProvider.StaticValueProvider.of("gs://nashtechbeam")));
+                            .withCustomGcsTempLocation(ValueProvider.StaticValueProvider.of(tempLocation)));
 
             pipeline.run().waitUntilFinish();
 
@@ -89,63 +89,6 @@ public class  TransformationPipeline {
 
         } catch (Exception encryptionException) {
             logger.error("Pipeline execution failed", encryptionException);
-        }
-    }
-
-    static class ParseAndValidateCsvFn extends DoFn<String, List<String>> {
-        private final List<String> schema;
-
-        ParseAndValidateCsvFn(List<String> schema) {
-            this.schema = schema;
-        }
-
-        @ProcessElement
-        public void processElement(@Element String line, OutputReceiver<List<String>> out) {
-            String[] values = line.split(",");
-            if (values.length != schema.size()) {
-                throw new RuntimeException("Invalid CSV schema");
-            }
-            out.output(Arrays.asList(values));
-        }
-    }
-
-    static class EncryptDataFn extends DoFn<List<String>, List<String>> {
-        private final Logger logger = LoggerFactory.getLogger(EncryptDataFn.class);
-        private final List<String> schema;
-        private final List<String> personalInfoColumns;
-        private final String kmsKeyUri;
-        private boolean isFirstRow = true;
-
-        EncryptDataFn(List<String> schema, List<String> personalInfoColumns, String kmsKeyUri) {
-            this.schema = schema;
-            this.personalInfoColumns = personalInfoColumns;
-            this.kmsKeyUri = kmsKeyUri;
-        }
-
-        @ProcessElement
-        public void processElement(@Element List<String> row, OutputReceiver<List<String>> out) {
-            if (isFirstRow) {
-                isFirstRow = false;
-                return;
-            }
-
-            List<String> encryptedRow = IntStream.range(0, row.size())
-                    .mapToObj(index -> {
-                        String columnName = schema.get(index);
-                        try {
-                            String encryptedValue = personalInfoColumns.contains(columnName) ?
-                                    AESUtil.encrypt(row.get(index), kmsKeyUri) : row.get(index);
-                            logger.info("Column '{}' encrypted successfully", columnName);
-                            return encryptedValue;
-                        } catch (Exception encryptionException) {
-                            logger.error("Encryption failed for column: {}", columnName, encryptionException);
-                            throw new EncryptionException("Encryption failed for column: " + columnName, encryptionException);
-                        }
-                    })
-                    .collect(Collectors.toList());
-
-            logger.info("Encrypted row: {}", encryptedRow);
-            out.output(encryptedRow);
         }
     }
 }
