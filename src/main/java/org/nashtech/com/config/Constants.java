@@ -22,8 +22,4 @@ public class Constants {
      * RSA key size (in bits).
      */
     public static final int RSA_KEY_SIZE = 2048;
-
-    /**
-     * Name of the properties file containing configuration data.
-     */
 }
