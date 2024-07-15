@@ -29,7 +29,7 @@ public class AESUtil {
      */
     public static String encrypt(String data, String kmsKeyUri) {
         try {
-            KmsClient kmsClient = new GcpKmsClient().withCredentials("/home/nashtech/Documents/TransformationPipeline/src/main/resources/vernal-verve-428206-h2-23df7cd24ebc.json");
+            KmsClient kmsClient = new GcpKmsClient().withCredentials("/home/nashtech/Documents/TransformationPipeline/src/main/resources/vernal-verve-428206-h2-195a74e70516.json");
 
             logger.info("Using service account credentials for AES encryption");
 
