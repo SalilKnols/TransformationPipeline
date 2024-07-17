@@ -32,7 +32,7 @@ public class TransformationPipelineWithSecretKey {
 
         // Load properties from a file
         Properties prop = new Properties();
-        try (InputStream input = Files.newInputStream(Paths.get("/home/nashtech/Desktop/Data_Mesh_Prod/Encryption-decryption/TransformationPipeline/src/main/resources/field.properties"))) {
+        try (InputStream input = Files.newInputStream(Paths.get("path_to_your_input_file"))) {
             prop.load(input);
         } catch (IOException exception) {
             logger.error("Error while loading the properties file:",exception.getMessage());
