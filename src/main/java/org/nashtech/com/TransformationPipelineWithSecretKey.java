@@ -1,11 +1,9 @@
 package org.nashtech.com;
 
 import com.google.cloud.secretmanager.v1.*;
-import com.google.crypto.tink.Aead;
-import com.google.crypto.tink.CleartextKeysetHandle;
-import com.google.crypto.tink.JsonKeysetReader;
-import com.google.crypto.tink.KeysetHandle;
+import com.google.crypto.tink.*;
 import com.google.crypto.tink.aead.AeadConfig;
+import com.google.crypto.tink.aead.AeadKeyTemplates;
 import com.google.protobuf.ByteString;
 import org.apache.beam.runners.direct.DirectRunner;
 import org.apache.beam.sdk.Pipeline;
@@ -18,8 +16,7 @@ import org.apache.beam.sdk.values.PCollection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.FileOutputStream;
-import java.io.IOException;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -33,11 +30,20 @@ public class TransformationPipelineWithSecretKey {
 
     public static void main(String[] args) {
 
+        // Load properties from a file
         Properties prop = new Properties();
+        try (InputStream input = Files.newInputStream(Paths.get("/home/nashtech/Desktop/Data_Mesh_Prod/Encryption-decryption/TransformationPipeline/src/main/resources/field.properties"))) {
+            prop.load(input);
+        } catch (IOException exception) {
+            logger.error("Error while loading the properties file:",exception.getMessage());
+            return;
+        }
+
+
         String PROJECT_ID = prop.getProperty("PROJECT_ID");
         String SECRET_ID = prop.getProperty("SECRET_ID");
         String SECRET_VERSION = prop.getProperty("SECRET_VERSION");
-        String inputFile = prop.getProperty("inputFile");
+        String inputFile = prop.getProperty("input.File");
         String outputFile = prop.getProperty("outputFile");
         String encryptedFilePath = prop.getProperty("encryptedFilePath");
         String decryptedFilePath = prop.getProperty("decryptedFilePath");
@@ -46,9 +52,10 @@ public class TransformationPipelineWithSecretKey {
         try {
             AeadConfig.register();
         } catch (GeneralSecurityException exception) {
-           logger.info("Error during Tink initialization:",exception.getMessage());
+            logger.info("Error during Tink initialization:", exception.getMessage());
             return;
         }
+
         // Create the Pipeline
         PipelineOptionsFactory.register(MyOptions.class);
         MyOptions options = PipelineOptionsFactory.fromArgs(args).withValidation().as(MyOptions.class);
@@ -58,9 +65,9 @@ public class TransformationPipelineWithSecretKey {
         // Create a PCollection with a single element (dummy element to trigger the pipeline)
         PCollection<String> dummyCollection = p.apply("Create Dummy", Create.of("dummy"));
 
-       /* *//**
+        /**
          * Step 1: Generate, Encode, and Store Key through GCP KMS using TINK library.
-         *//*
+         */
         dummyCollection.apply("Generate, Encode, and Store Key", ParDo.of(new DoFn<String, Void>() {
             @ProcessElement
             public void processElement(ProcessContext c) {
@@ -79,14 +86,14 @@ public class TransformationPipelineWithSecretKey {
                     // Store the Base64 encoded key in Google Secret Manager
                     storeKeyInSecretManager(PROJECT_ID, SECRET_ID, base64Key);
                 } catch (Exception exception) {
-                    logger.error("Failed to generate, encode, and store key in Secret manager", exception.getMessage());                }
+                    logger.error("Failed to generate, encode, and store key in Secret manager", exception.getMessage());
+                }
             }
-        }));*/
+        }));
 
-
-      /**
-        * Step 2: Read CSV file, encrypt its contents, and write encrypted data to a new file.
-        */
+        /**
+         * Step 2: Read CSV file, encrypt its contents, and write encrypted data to a new file.
+         */
         dummyCollection.apply("Read CSV File and Encrypt", ParDo.of(new DoFn<String, Void>() {
             @ProcessElement
             public void processElement(ProcessContext c) throws IOException {
@@ -94,61 +101,45 @@ public class TransformationPipelineWithSecretKey {
                     // Read CSV file content
                     byte[] fileContent = Files.readAllBytes(Paths.get(inputFile));
 
-                        // Retrieve the secret version and Decode the Base64 encoded key
-                        String base64Key = retrieveKeyFromSecretManager();
-                        byte[] keyBytes = Base64.getDecoder().decode(base64Key);
-                        String key = new String(keyBytes, StandardCharsets.UTF_8);
+                    // Retrieve the secret version and Decode the Base64 encoded key
+                    String base64Key = retrieveKeyFromSecretManager(PROJECT_ID, SECRET_ID, SECRET_VERSION);
+                    byte[] keyBytes = Base64.getDecoder().decode(base64Key);
 
-                        // Load keyset and get AEAD primitive
-                        KeysetHandle keysetHandle = CleartextKeysetHandle.read(JsonKeysetReader.withBytes(keyBytes));
-                        Aead aead = keysetHandle.getPrimitive(Aead.class);
+                    // Load keyset and get AEAD primitive
+                    KeysetHandle keysetHandle = CleartextKeysetHandle.read(JsonKeysetReader.withBytes(keyBytes));
+                    Aead aead = keysetHandle.getPrimitive(Aead.class);
 
-                        // Encrypt the file content
-                        byte[] encryptedData = aead.encrypt(fileContent, null);
+                    // Encrypt the file content
+                    byte[] encryptedData = aead.encrypt(fileContent, null);
 
-                        // Write encrypted data to output file
-                        try {
-                            Files.write(Paths.get(outputFile), encryptedData);
-                        } catch (Exception e) {
-                            e.printStackTrace();
-                        }
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
-
+                    // Write encrypted data to output file
+                    Files.write(Paths.get(outputFile), encryptedData);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             }
         }));
 
         /**
-         * Step 3: Retrieve data from secret manager, decode it using base64, and decrypting the encrypted file.
+         * Step 3: Retrieve data from secret manager, decode it using base64, and decrypt the encrypted file.
          */
         dummyCollection.apply("File Decryption", ParDo.of(new DoFn<String, Void>() {
             @ProcessElement
             public void processElement(ProcessContext c) throws IOException {
-                String encryptionKey = c.element();
-
                 try {
-
                     // Retrieve the secret version
-                    try {
-                        String base64Key = retrieveKeyFromSecretManager();
-                        byte[] keyBytes = Base64.getDecoder().decode(base64Key);
-                        String key = new String(keyBytes, StandardCharsets.UTF_8);
+                    String base64Key = retrieveKeyFromSecretManager(PROJECT_ID, SECRET_ID, SECRET_VERSION);
+                    byte[] keyBytes = Base64.getDecoder().decode(base64Key);
 
-                        // Load keyset and get AEAD primitive
-                        KeysetHandle keysetHandle = CleartextKeysetHandle.read(JsonKeysetReader.withBytes(keyBytes));
-                        Aead aead = keysetHandle.getPrimitive(Aead.class);
+                    // Load keyset and get AEAD primitive
+                    KeysetHandle keysetHandle = CleartextKeysetHandle.read(JsonKeysetReader.withBytes(keyBytes));
+                    Aead aead = keysetHandle.getPrimitive(Aead.class);
 
-                        // Perform decryption and write decrypted data
-                        decryptCsvFile(encryptedFilePath, decryptedFilePath, keyBytes);
-                        // Write encrypted data to output file
-                        }catch (Exception exception) {
-                       logger.error("Error while retrieving data from secret manager, decoding it using base64 and decrypting it.",exception.getMessage());
-                    }
+                    // Perform decryption and write decrypted data
+                    decryptCsvFile(encryptedFilePath, decryptedFilePath, keyBytes);
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
-
             }
         }));
 
@@ -201,14 +192,10 @@ public class TransformationPipelineWithSecretKey {
      * @return The retrieved key as a UTF-8 encoded string.
      * @throws Exception If an error occurs while accessing Secret Manager or retrieving the key.
      */
-    private static String retrieveKeyFromSecretManager() throws Exception {
-        Properties prop = new Properties();
-        String PROJECT_ID = prop.getProperty("PROJECT_ID");
-        String SECRET_ID = prop.getProperty("SECRET_ID");
-        String SECRET_VERSION = prop.getProperty("SECRET_VERSION");
+    private static String retrieveKeyFromSecretManager(String projectId, String secretId, String secretVersion) throws Exception {
         SecretManagerServiceSettings settings = SecretManagerServiceSettings.newBuilder().build();
         try (SecretManagerServiceClient client = SecretManagerServiceClient.create(settings)) {
-            String secretVersionName = SecretVersionName.of(PROJECT_ID, SECRET_ID, SECRET_VERSION).toString();
+            String secretVersionName = SecretVersionName.of(projectId, secretId, secretVersion).toString();
             SecretPayload payload = client.accessSecretVersion(secretVersionName).getPayload();
             return payload.getData().toStringUtf8();
         }
@@ -238,8 +225,9 @@ public class TransformationPipelineWithSecretKey {
         // Write the decrypted data to an output file.
         try (FileOutputStream outputStream = new FileOutputStream(decryptedFilePath)) {
             outputStream.write(decryptedData);
-        } catch (Exception exception){
-            logger.error("Error while writing the decrypted data to an output file:",exception.getMessage());
+        } catch (Exception exception) {
+            logger.error("Error while writing the decrypted data to an output file:", exception.getMessage());
         }
     }
 }
+
